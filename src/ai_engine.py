@@ -707,32 +707,6 @@ class PocoAI:
         cleaned = re.sub(r"[:\-\s]+$", "", cleaned)
         if cleaned.strip().upper() in {"SKIP", "NO REPLY", "IGNORE"}:
             return ""
-        low_value_patterns = (
-            r"\b(?:i am|i'm)\s+poco\b",
-            r"\bthis\s+is\s+poco\b",
-            r"\bas\s+poco\b",
-            r"\bmy\s+name\s+is\b",
-            r"\bask\s+me\s+anything\b",
-            r"\bama\b",
-            r"\bfollow\s+me\b",
-            r"\bgive\s+me\s+a\s+follow\b",
-            r"\bturn\s+on\s+notifications\b",
-            r"\bwelcome\s+to\s+my\b",
-            r"\bfashion\s+advice\b",
-            r"\bproduct\s+info\b",
-            r"\border\s+support\b",
-            r"\bcustomer\s+(?:support|service)\b",
-            r"\blatest\s+collection\b",
-            r"\bfinding\s+a\s+store\b",
-            r"\bchecking\s+an\s+order\b",
-            r"\bsize\s+guide\b",
-            r"\badd\s+to\s+cart\b",
-            r"\bbuy\s+now\b",
-            r"\bpoco\s+experience\b",
-        )
-        lowered = cleaned.lower()
-        if any(re.search(pattern, lowered) for pattern in low_value_patterns):
-            return ""
         if _looks_like_prompt_echo(cleaned):
             return ""
         if self._has_public_boilerplate(cleaned):
@@ -1430,19 +1404,7 @@ class PocoAI:
         return [item[1] for item in scored]
 
     def _fallback_engagement_comment(self, candidate: dict) -> str:
-        import random
-        topic = str(candidate.get("topic", "")).strip().lower()
-        hook = " ".join(str(candidate.get("hook", "")).split()).strip()
-        
-        openings = ["Honestly,", "Literally", "Actually", "Genuinely", "Just realized", "Thinking about"]
-        observations = ["this completely shifts the perspective.", "the composition here is next level.", "this is exactly what the timeline needed.", "the aesthetic is unmatched.", "the energy here is flawless."]
-        reactions = ["Obsessed.", "Beautiful.", "Iconic.", "Incredible.", "Wild."]
-        emoji = random.choice(["✨", "🤌", "🔥", "💭", "🤍", "👀", "🎯", "👏", "⚡"])
-        
-        base = f"{random.choice(openings)} {random.choice(observations)} {random.choice(reactions)} {emoji}"
-        
-
-        return base
+        return ""
     def _safe_author_handle(self, candidate: dict) -> str:
         handle = str(candidate.get("author_handle", "")).strip()
         if not re.fullmatch(r"@[A-Za-z0-9_]{1,15}", handle):

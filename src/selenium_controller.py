@@ -950,40 +950,6 @@ class SeleniumController:
                     log.warning("Media was requested but no media uploaded; skipping post")
                     return False
 
-            # Try Ctrl+Enter first
-            ctrl_enter_dispatched = False
-            try:
-                composer = self._find_first(["[data-testid='tweetTextarea_0']", "div[role='textbox']"], timeout=5)
-                composer.send_keys(Keys.CONTROL, Keys.RETURN)
-                log.info("Dispatched Ctrl+Enter to composer")
-                ctrl_enter_dispatched = True
-                
-                # Wait up to 10 seconds for the composer dialog to close
-                end_time = time.time() + 10
-                closed = False
-                while time.time() < end_time:
-                    current = self.driver.current_url or ""
-                    if "/compose" not in current and "intent" not in current:
-                        closed = True
-                        break
-                    try:
-                        if not composer.is_displayed():
-                            closed = True
-                            break
-                    except Exception:
-                        closed = True
-                        break
-                    time.sleep(0.5)
-                
-                if closed:
-                    log.info("Compose closed after Ctrl+Enter; verifying post before reporting success")
-                    return self._verify_x_post_published(safe_text)
-                else:
-                    log.warning("Compose modal didn't close in 10s, but Ctrl+Enter was dispatched.")
-            except Exception as e:
-                log.warning("Ctrl+Enter failed: %s; falling back to Post button", e)
-
-            # Fallback ONLY if Ctrl+Enter was NOT successfully dispatched or didn't close modal:
             post_timeout = 30
             if requested_media:
                 post_timeout = max(post_timeout, 120)
