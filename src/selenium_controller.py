@@ -26,6 +26,19 @@ from selenium.common.exceptions import (
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+
+# Monkey patch for ChromeDriver 149 'value must be a string' bug
+from selenium.webdriver.remote.webelement import WebElement
+import copy
+_original_execute = WebElement._execute
+def _patched_execute(self, command, params):
+    if command in ('sendKeysToElement', 'sendKeysToActiveElement'):
+        if 'value' in params and isinstance(params['value'], list):
+            params = copy.deepcopy(params)
+            params['value'] = ''.join(str(v) for v in params['value'])
+    return _original_execute(self, command, params)
+WebElement._execute = _patched_execute
+
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -508,6 +521,9 @@ class SeleniumController:
             "div[contenteditable='true'][role='textbox']",
             "textarea",
             "div[role='textbox']",
+            "[contenteditable='true']",
+            ".textarea",
+            ".text-input"
         ]
 
     def _deepseek_ready_selectors(self) -> List[str]:
