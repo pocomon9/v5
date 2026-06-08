@@ -501,8 +501,10 @@ class SeleniumController:
 
     def _gemini_ready_selectors(self) -> List[str]:
         return [
+            "div.ql-editor[contenteditable='true']",
             "rich-textarea div[contenteditable='true']",
-            "div[contenteditable='true'][aria-label*='Enter']",
+            "div[contenteditable='true'][aria-label*='Enter' i]",
+            "div[contenteditable='true'][aria-label*='Prompt' i]",
             "div[contenteditable='true'][role='textbox']",
             "textarea",
             "div[role='textbox']",
@@ -511,12 +513,11 @@ class SeleniumController:
     def _deepseek_ready_selectors(self) -> List[str]:
         return [
             "#chat-input",
+            "textarea[placeholder*='Message' i]",
             "textarea",
             "div[contenteditable='true'][role='textbox']",
             "div[contenteditable='true']",
             "[role='textbox']",
-            "button[type='submit']",
-            "button[aria-label*='Send']",
         ]
 
     def _open_tab(self, url: str) -> None:
@@ -950,6 +951,40 @@ class SeleniumController:
                     log.warning("Media was requested but no media uploaded; skipping post")
                     return False
 
+            # Try Ctrl+Enter first
+            ctrl_enter_dispatched = False
+            try:
+                composer = self._find_first(["[data-testid='tweetTextarea_0']", "div[role='textbox']"], timeout=5)
+                composer.send_keys(Keys.CONTROL, Keys.RETURN)
+                log.info("Dispatched Ctrl+Enter to composer")
+                ctrl_enter_dispatched = True
+                
+                # Wait up to 10 seconds for the composer dialog to close
+                end_time = time.time() + 10
+                closed = False
+                while time.time() < end_time:
+                    current = self.driver.current_url or ""
+                    if "/compose" not in current and "intent" not in current:
+                        closed = True
+                        break
+                    try:
+                        if not composer.is_displayed():
+                            closed = True
+                            break
+                    except Exception:
+                        closed = True
+                        break
+                    time.sleep(0.5)
+                
+                if closed:
+                    log.info("Compose closed after Ctrl+Enter; verifying post before reporting success")
+                    return self._verify_x_post_published(safe_text)
+                else:
+                    log.warning("Compose modal didn't close in 10s, but Ctrl+Enter was dispatched.")
+            except Exception as e:
+                log.warning("Ctrl+Enter failed: %s; falling back to Post button", e)
+
+            # Fallback ONLY if Ctrl+Enter was NOT successfully dispatched or didn't close modal:
             post_timeout = 30
             if requested_media:
                 post_timeout = max(post_timeout, 120)
@@ -1209,13 +1244,23 @@ class SeleniumController:
         safe_text = _webdriver_safe_text(reply_text)[:280]
         if self.driver is None or not tweet_url or not safe_text:
             return False
-        previous_alarm_handler = None
-        alarm_armed = False
-
-        # signal alarm disabled
+        import platform
+        if platform.system() != "Windows":
+            try:
+                import signal
+                def _handle_timeout(signum, frame):
+                    raise TimeoutError("Selenium operation timed out")
+                previous_alarm_handler = signal.signal(signal.SIGALRM, _handle_timeout)
+                signal.alarm(60)
+                alarm_armed = True
+            except Exception:
+                pass
 
         try:
-            # alarm disabled
+            try:
+                self.driver.set_page_load_timeout(30)
+            except Exception:
+                pass
             self.driver.get(tweet_url)
             box = self._find_first(["[data-testid='tweetTextarea_0']", "div[role='textbox']"], timeout=20)
             try:
@@ -1231,34 +1276,50 @@ class SeleniumController:
                         pass
             box.send_keys(safe_text)
 
-            button = self._clickable("[data-testid='tweetButton'], [data-testid='tweetButtonInline'], [data-testid='postButton'], [data-testid='postButtonInline']", timeout=20)
+            button = self._clickable(["[data-testid='tweetButton']", "[data-testid='tweetButtonInline']", "[data-testid='postButton']", "[data-testid='postButtonInline']"], timeout=20)
             
             # Scroll into view
-            try:
-                self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", button)
-            except Exception:
-                pass
-            _delay(1.5, 2.5)
-
-            try:
-                # Real mouse move + click
-                from selenium.webdriver.common.action_chains import ActionChains
-                ActionChains(self.driver).move_to_element(button).pause(1).click().perform()
-            except Exception as click_err:
-                log.warning("ActionChains click failed on reply button, attempting script fallback: %s", click_err)
+            if button:
                 try:
-                    button.click()
-                except Exception as click_err2:
-                    log.warning("Physical click failed on reply button, using script fallback: %s", click_err2)
-                    self.driver.execute_script("arguments[0].click();", button)
-            _delay(2, 4)
-            return True
+                    self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", button)
+                except Exception:
+                    pass
+                _delay(1.5, 2.5)
+
+                try:
+                    # Real mouse move + click
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    ActionChains(self.driver).move_to_element(button).pause(1).click().perform()
+                except Exception as click_err:
+                    log.warning("ActionChains click failed on reply button, attempting script fallback: %s", click_err)
+                    try:
+                        button.click()
+                    except Exception as click_err2:
+                        log.warning("Physical click failed on reply button, using script fallback: %s", click_err2)
+                        self.driver.execute_script("arguments[0].click();", button)
+                _delay(2, 4)
+                return True
+            else:
+                log.error("Reply button not found")
+                return False
         except Exception as exc:
             log.error("Reply failed: %s", exc)
             self._handle_browser_error("Reply to tweet", exc)
             return False
         finally:
-            pass
+            try:
+                self.driver.set_page_load_timeout(int(os.environ.get("NEXUS_BROWSER_PAGE_LOAD_TIMEOUT_SECONDS", "45")))
+            except Exception:
+                pass
+            import platform
+            if platform.system() != "Windows" and alarm_armed:
+                try:
+                    import signal
+                    signal.alarm(0)
+                    if previous_alarm_handler:
+                        signal.signal(signal.SIGALRM, previous_alarm_handler)
+                except Exception:
+                    pass
     def send_email_protonmail(self, proton_user: str, proton_pass: str, to: str, subject: str, body: str) -> bool:
         if self.driver is None or not to or not subject:
             return False
@@ -1519,27 +1580,36 @@ class SeleniumController:
                 try:
                     new_chat_btn = self.driver.find_elements(
                         By.CSS_SELECTOR,
-                        "[aria-label='New chat'], [data-testid='create-navigation-button'], a[href='/'], button[aria-label='New chat']"
+                        "[aria-label='New chat' i], [data-testid='create-navigation-button'], [data-testid='create-new-chat-button'], button[aria-label='New chat' i], a[href='/'] svg, [class*='new-chat']"
                     )
+                    clicked_new = False
                     if new_chat_btn:
-                        self.driver.execute_script("arguments[0].click();", new_chat_btn[0])
-                        _delay(2, 3)
-                    else:
-                        self.driver.get("https://chatgpt.com/")
+                        for btn in new_chat_btn[:2]:
+                            try:
+                                self.driver.execute_script("arguments[0].click();", btn)
+                                clicked_new = True
+                                break
+                            except Exception:
+                                pass
+                    if not clicked_new:
+                        self.driver.execute_script("window.location.href = 'https://chatgpt.com/?model=auto';")
                         _delay(3, 5)
+                    else:
+                        _delay(2, 3)
                 except Exception:
                     try:
-                        self.driver.get("https://chatgpt.com/")
+                        self.driver.execute_script("window.location.href = 'https://chatgpt.com/?model=auto';")
                         _delay(3, 5)
                     except Exception:
                         pass
 
-                box = self._find_first_visible(["#prompt-textarea", "textarea", "div[contenteditable='true']", "[role='textbox']"], timeout=18)
+                composer_selectors = ["#prompt-textarea", "[id*='prompt']", "textarea", "div[contenteditable='true'][data-id]", "div[contenteditable='true']", ".ProseMirror", "[role='textbox']"]
+                box = self._find_first_visible(composer_selectors, timeout=18)
                 if not self._fill_prompt_box(box, safe_question):
-                    box = self._find_first_visible(["#prompt-textarea", "textarea", "div[contenteditable='true']", "[role='textbox']"], timeout=8)
+                    box = self._find_first_visible(composer_selectors, timeout=8)
                     if not self._fill_prompt_box(box, safe_question):
                         raise TimeoutException("ChatGPT composer did not accept prompt text")
-                if not self._click_send_button(["[data-testid='send-button']", "button[aria-label*='Send']"]):
+                if not self._click_send_button(["[data-testid='send-button']", "button[aria-label*='Send' i]", "button[data-testid*='send']"]):
                     try:
                         box.send_keys(Keys.CONTROL, Keys.RETURN)
                     except Exception:
@@ -1594,17 +1664,25 @@ class SeleniumController:
                 try:
                     new_chat_btn = self.driver.find_elements(
                         By.CSS_SELECTOR,
-                        "[aria-label*='New chat' i], [aria-label*='Start new chat' i], [data-testid*='new-chat' i], button[class*='new-chat'], a[href='/app']"
+                        "[aria-label*='New chat' i], [aria-label*='Start new chat' i], [data-testid*='new-chat' i], button[class*='new-chat'], a[href*='/app']"
                     )
+                    clicked_new = False
                     if new_chat_btn:
-                        self.driver.execute_script("arguments[0].click();", new_chat_btn[0])
-                        _delay(2, 3)
-                    else:
-                        self.driver.get("https://gemini.google.com/app")
+                        for btn in new_chat_btn[:2]:
+                            try:
+                                self.driver.execute_script("arguments[0].click();", btn)
+                                clicked_new = True
+                                break
+                            except Exception:
+                                pass
+                    if not clicked_new:
+                        self.driver.execute_script("window.location.href = 'https://gemini.google.com/app';")
                         _delay(3, 5)
+                    else:
+                        _delay(2, 3)
                 except Exception:
                     try:
-                        self.driver.get("https://gemini.google.com/app")
+                        self.driver.execute_script("window.location.href = 'https://gemini.google.com/app';")
                         _delay(3, 5)
                     except Exception:
                         pass
@@ -1660,17 +1738,25 @@ class SeleniumController:
                 try:
                     new_chat_btn = self.driver.find_elements(
                         By.CSS_SELECTOR,
-                        "div[class*='newChat'], [aria-label='New Chat'], div[class*='sidebar'] div[role='button'], button[class*='new-chat']"
+                        "div[class*='newChat' i], [aria-label*='New Chat' i], div[class*='sidebar'] div[role='button'], button[class*='new-chat'], [class*='button'] svg"
                     )
+                    clicked_new = False
                     if new_chat_btn:
-                        self.driver.execute_script("arguments[0].click();", new_chat_btn[0])
-                        _delay(2, 3)
-                    else:
-                        self.driver.get("https://chat.deepseek.com/")
+                        for btn in new_chat_btn[:2]:
+                            try:
+                                self.driver.execute_script("arguments[0].click();", btn)
+                                clicked_new = True
+                                break
+                            except Exception:
+                                pass
+                    if not clicked_new:
+                        self.driver.execute_script("window.location.href = 'https://chat.deepseek.com/';")
                         _delay(3, 5)
+                    else:
+                        _delay(2, 3)
                 except Exception:
                     try:
-                        self.driver.get("https://chat.deepseek.com/")
+                        self.driver.execute_script("window.location.href = 'https://chat.deepseek.com/';")
                         _delay(3, 5)
                     except Exception:
                         pass
